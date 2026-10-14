@@ -2,10 +2,13 @@ package cn.novel.yonren.trigger.http;
 
 import cn.novel.yonren.api.dto.ChapterPlanApprovalRequestDTO;
 import cn.novel.yonren.api.dto.JobStatusResponseDTO;
+import cn.novel.yonren.api.dto.LlmInteractionEventDTO;
 import cn.novel.yonren.api.dto.StoryGenerateRequestDTO;
 import cn.novel.yonren.domain.novel.model.entity.ArmoryCommandEntity;
 import cn.novel.yonren.domain.novel.model.valobj.properties.StoryProperties;
 import cn.novel.yonren.domain.novel.service.job.GenerationJob;
+import cn.novel.yonren.domain.novel.service.job.LlmInteractionEvent;
+import cn.novel.yonren.domain.novel.service.job.LlmInteractionTracker;
 import cn.novel.yonren.domain.novel.service.job.StoryJobService;
 import cn.novel.yonren.trigger.http.StoryCommandAssembler;
 import cn.novel.yonren.types.exception.AppException;
@@ -34,6 +37,9 @@ public class JobController {
 
     @Resource
     private StoryProperties storyProperties;
+
+    @Resource
+    private LlmInteractionTracker interactionTracker;
 
     @PostMapping
     public JobStatusResponseDTO submit(@RequestBody StoryGenerateRequestDTO request) {
@@ -131,10 +137,30 @@ public class JobController {
         dto.setPlanApprovalDeadlineMs(job.getPlanApprovalDeadlineMs());
         dto.setApprovalRound(job.getApprovalRound());
         dto.setHealthReport(job.getLastHealthReport());
+        dto.setLlmInteractions(interactionTracker.snapshot(job.getJobId()).stream()
+                .map(this::toInteractionDTO)
+                .toList());
         // 仅挂起态透出计划：非挂起态前端拿到计划也无事可做，且避免把大对象挂在每次轮询上
         if (job.isAwaitingApproval()) {
             dto.setPendingChapterPlan(storyJobService.pendingChapterPlan(job.getJobId()));
         }
+        return dto;
+    }
+
+    private LlmInteractionEventDTO toInteractionDTO(LlmInteractionEvent event) {
+        LlmInteractionEventDTO dto = new LlmInteractionEventDTO();
+        dto.setCallId(event.callId());
+        dto.setType(event.type());
+        dto.setScene(event.scene());
+        dto.setModel(event.model());
+        dto.setAttempt(event.attempt());
+        dto.setMaxAttempts(event.maxAttempts());
+        dto.setTimestampMs(event.timestampMs());
+        dto.setRetryAtMs(event.retryAtMs());
+        dto.setDurationMs(event.durationMs());
+        dto.setMessage(event.message());
+        dto.setPromptPreview(event.promptPreview());
+        dto.setResponsePreview(event.responsePreview());
         return dto;
     }
 

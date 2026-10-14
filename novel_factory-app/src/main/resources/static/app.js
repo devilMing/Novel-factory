@@ -42,6 +42,7 @@
     let pendingPlanSnapshot = null;
     let pendingPlanSignature = null;
     let approvalTimer = null;
+    let modelLinkTimelineSignature = null;
 
     // ===== DOM 元素 =====
     const loginPage = document.getElementById('login-page');
@@ -203,6 +204,10 @@
     const progressCard = document.getElementById('progress-card');
     const progressBarEl = document.getElementById('progress-bar');
     const progressMetaEl = document.getElementById('progress-meta');
+    const modelLinkCard = document.getElementById('model-link-card');
+    const modelLinkState = document.getElementById('model-link-state');
+    const modelLinkCurrent = document.getElementById('model-link-current');
+    const modelLinkTimeline = document.getElementById('model-link-timeline');
 
     /** 字符进度条：26 格，后端在每章开始时更新 currentChapter，轮询到即推进一格 */
     var PROGRESS_WIDTH = 26;
@@ -317,6 +322,8 @@
         statusDetail.innerHTML = '<div class="status-row"><span class="status-label">状态</span><span>提交中...</span></div>';
         // 进度专属区块随作业一起出现，先重置为空条
         progressCard.classList.remove('hidden');
+        modelLinkCard.classList.remove('hidden');
+        renderModelLink([], 'PENDING');
         renderProgressBar({ status: 'PENDING', currentChapter: null, totalChapters: null });
 
         fetchJson('/api/jobs', {
@@ -395,6 +402,7 @@
                 hideApprovalCard();
                 jobStatusDiv.classList.add('hidden');
                 progressCard.classList.add('hidden');
+                modelLinkCard.classList.add('hidden');
                 btnSubmit.disabled = false;
                 btnCancel.disabled = true;
             }
@@ -409,6 +417,8 @@
         currentJobId = saved;
         jobStatusDiv.classList.remove('hidden');
         progressCard.classList.remove('hidden');
+        modelLinkCard.classList.remove('hidden');
+        renderModelLink([], 'PENDING');
         btnSubmit.disabled = true;
         btnCancel.disabled = false;
         renderProgressBar({ status: 'PENDING', currentChapter: null, totalChapters: null });
@@ -442,7 +452,119 @@
         renderResumeAction(job);
         // 批末体检随轮询更新（每批结束出现；无体检报告时隐藏）
         renderHealthReport(job.healthReport);
+        renderModelLink(job.llmInteractions || [], job.status);
     }
+
+    function renderModelLink(events, jobStatus) {
+        modelLinkCard.classList.remove('hidden');
+        if (!events.length) {
+            var terminal = isTerminal(jobStatus);
+            modelLinkState.className = 'model-link-state ' + (terminal ? 'idle' : 'waiting');
+            modelLinkState.innerHTML = '<i></i> ' + (terminal ? '无模型事件' : '等待模型调用');
+            modelLinkCurrent.innerHTML = '<span class="model-link-pulse"></span><span>'
+                    + (terminal ? '本次作业没有可展示的模型调用。' : '正在等待后端发起下一次请求…') + '</span>';
+            if (modelLinkTimelineSignature !== '[]') {
+                modelLinkTimeline.innerHTML = '';
+                modelLinkTimelineSignature = '[]';
+            }
+            return;
+        }
+
+        var latest = events[events.length - 1];
+        var stateNames = { REQUESTED: '通信中', RETRY_WAIT: '冷却重试', SUCCEEDED: '响应完成', FAILED: '调用失败' };
+        var stateClass = { REQUESTED: 'active', RETRY_WAIT: 'retry', SUCCEEDED: 'success', FAILED: 'failed' };
+        modelLinkState.className = 'model-link-state ' + (stateClass[latest.type] || 'idle');
+        modelLinkState.innerHTML = '<i></i> ' + esc(stateNames[latest.type] || latest.type);
+
+        var liveText = '<strong>' + esc(sceneName(latest.scene)) + '</strong>'
+                + '<span>' + esc(latest.model || '未指定模型') + '</span>'
+                + '<span>第 ' + Number(latest.attempt || 1) + ' / ' + Number(latest.maxAttempts || 1) + ' 次</span>';
+        if (latest.type === 'RETRY_WAIT' && latest.retryAtMs) {
+            liveText += '<span class="model-link-clock" data-retry-at="' + Number(latest.retryAtMs) + '"></span>';
+        } else if (latest.type === 'REQUESTED') {
+            liveText += '<span class="model-link-clock" data-started-at="' + Number(latest.timestampMs) + '"></span>';
+        } else if (latest.durationMs != null) {
+            liveText += '<span>耗时 ' + formatDuration(latest.durationMs) + '</span>';
+        }
+        modelLinkCurrent.innerHTML = '<span class="model-link-pulse"></span><div>' + liveText
+                + '<small>' + esc(latest.message || '') + '</small></div>';
+
+        var visibleEvents = events.slice(-12);
+        var timelineSignature = JSON.stringify(visibleEvents);
+        if (timelineSignature !== modelLinkTimelineSignature) {
+            var detailsState = Object.create(null);
+            modelLinkTimeline.querySelectorAll('details[data-detail-key]').forEach(function (node) {
+                if (!node.open) return;
+                var pre = node.querySelector('pre');
+                detailsState[node.dataset.detailKey] = { scrollTop: pre ? pre.scrollTop : 0 };
+            });
+            var timelineScrollTop = modelLinkTimeline.scrollTop;
+
+            modelLinkTimeline.innerHTML = visibleEvents.map(function (event) {
+                var detail = '';
+                if (event.promptPreview) {
+                    detail += '<details data-detail-key="' + modelLinkDetailKey(event, 'prompt')
+                            + '"><summary>发送给模型的内容（已裁剪）</summary><pre>'
+                            + esc(event.promptPreview) + '</pre></details>';
+                }
+                if (event.responsePreview) {
+                    detail += '<details data-detail-key="' + modelLinkDetailKey(event, 'response')
+                            + '"><summary>模型返回内容（已裁剪）</summary><pre>'
+                            + esc(event.responsePreview) + '</pre></details>';
+                }
+                var meta = new Date(event.timestampMs).toLocaleTimeString() + ' · '
+                        + esc(event.model || '-') + ' · ' + Number(event.attempt || 1) + '/' + Number(event.maxAttempts || 1);
+                return '<article class="model-link-event ' + esc(String(event.type || '').toLowerCase()) + '">'
+                        + '<div class="model-link-rail"><b></b></div><div class="model-link-event-body">'
+                        + '<header><span>' + esc(stateNames[event.type] || event.type) + '</span><time>' + meta + '</time></header>'
+                        + '<p><em>' + esc(sceneName(event.scene)) + '</em>' + esc(event.message || '') + '</p>'
+                        + detail + '</div></article>';
+            }).join('');
+            modelLinkTimelineSignature = timelineSignature;
+
+            modelLinkTimeline.querySelectorAll('details[data-detail-key]').forEach(function (node) {
+                var saved = detailsState[node.dataset.detailKey];
+                if (!saved) return;
+                node.open = true;
+                var pre = node.querySelector('pre');
+                if (pre) pre.scrollTop = saved.scrollTop;
+            });
+            modelLinkTimeline.scrollTop = timelineScrollTop;
+        }
+        refreshModelLinkClock();
+    }
+
+    function modelLinkDetailKey(event, kind) {
+        return encodeURIComponent([
+            event.callId || '', event.type || '', event.timestampMs || '', kind
+        ].join('|'));
+    }
+
+    function sceneName(scene) {
+        var names = {
+            VOLUME_BLUEPRINT: '卷蓝图', STAGE_BLUEPRINT: '阶段蓝图', CHAPTER_PLAN: '章节规划',
+            CHAPTER_CONTENT: '章节正文', SUMMARY: '章节摘要', AUDIT: '质量审校', GENERAL: '通用调用'
+        };
+        return names[scene] || scene || '模型调用';
+    }
+
+    function formatDuration(ms) {
+        var seconds = Math.max(0, Number(ms || 0)) / 1000;
+        return seconds < 10 ? seconds.toFixed(1) + ' 秒' : Math.round(seconds) + ' 秒';
+    }
+
+    function refreshModelLinkClock() {
+        document.querySelectorAll('.model-link-clock[data-retry-at]').forEach(function (node) {
+            var seconds = Math.max(0, Math.ceil((Number(node.dataset.retryAt) - Date.now()) / 1000));
+            node.textContent = seconds > 0 ? seconds + ' 秒后自动重试' : '即将自动重试';
+        });
+        document.querySelectorAll('.model-link-clock[data-started-at]').forEach(function (node) {
+            var seconds = Math.max(0, Math.floor((Date.now() - Number(node.dataset.startedAt)) / 1000));
+            node.textContent = '已等待 ' + seconds + ' 秒';
+        });
+    }
+
+    setInterval(refreshModelLinkClock, 1000);
 
     function statusBadge(status) {
         const colors = {

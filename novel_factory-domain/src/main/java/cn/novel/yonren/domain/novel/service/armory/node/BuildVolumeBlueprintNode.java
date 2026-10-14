@@ -7,6 +7,7 @@ import cn.novel.yonren.domain.novel.model.entity.StoryContextEntity;
 import cn.novel.yonren.domain.novel.model.entity.VolumeBlueprintEntity;
 import cn.novel.yonren.domain.novel.model.valobj.StoryVO;
 import cn.novel.yonren.domain.novel.service.armory.AbstractArmorySupport;
+import cn.novel.yonren.domain.novel.service.armory.PlanningCheckpointService;
 import cn.novel.yonren.domain.novel.service.armory.factory.DefaultArmoryFactory;
 import cn.novel.yonren.domain.novel.service.armory.llm.LlmInvokeService;
 import cn.novel.yonren.domain.novel.service.armory.memory.OutlineSegmentParser;
@@ -47,6 +48,9 @@ public class BuildVolumeBlueprintNode extends AbstractArmorySupport {
     @Resource
     private StoryMemoryService storyMemoryService;
 
+    @Resource
+    private PlanningCheckpointService planningCheckpointService;
+
     @Override
     public StrategyHandler<ArmoryCommandEntity, DefaultArmoryFactory.DynamicContext, StoryGenerateResultAggregate> get(ArmoryCommandEntity requestParameter, DefaultArmoryFactory.DynamicContext dynamicContext) {
         return buildStageBlueprintNode;
@@ -56,6 +60,9 @@ public class BuildVolumeBlueprintNode extends AbstractArmorySupport {
     public StoryGenerateResultAggregate doApply(ArmoryCommandEntity requestParameter, DefaultArmoryFactory.DynamicContext dynamicContext) throws Exception {
         log.info("装配 BuildVolumeBlueprintNode - 卷蓝图（全书长期锚）");
         prepareVolume(requestParameter, dynamicContext);
+        if (planningCheckpointService != null) {
+            planningCheckpointService.checkpointVolumes(dynamicContext);
+        }
         return router(requestParameter, dynamicContext);
     }
 

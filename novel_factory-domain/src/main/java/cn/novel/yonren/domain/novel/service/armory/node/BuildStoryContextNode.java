@@ -6,6 +6,7 @@ import cn.novel.yonren.domain.novel.model.entity.ArmoryCommandEntity;
 import cn.novel.yonren.domain.novel.model.entity.StoryContextEntity;
 import cn.novel.yonren.domain.novel.model.valobj.StoryVO;
 import cn.novel.yonren.domain.novel.service.armory.AbstractArmorySupport;
+import cn.novel.yonren.domain.novel.service.armory.PlanningCheckpointService;
 import cn.novel.yonren.domain.novel.service.armory.factory.DefaultArmoryFactory;
 import cn.novel.yonren.domain.novel.service.armory.prompt.ChapterGoalWindowPolicy;
 import jakarta.annotation.Resource;
@@ -22,6 +23,9 @@ public class BuildStoryContextNode extends AbstractArmorySupport {
 
     @Resource
     private BuildVolumeBlueprintNode buildVolumeBlueprintNode;
+
+    @Resource
+    private PlanningCheckpointService planningCheckpointService;
 
     @Override
     public StrategyHandler<ArmoryCommandEntity, DefaultArmoryFactory.DynamicContext, StoryGenerateResultAggregate> get(ArmoryCommandEntity requestParameter, DefaultArmoryFactory.DynamicContext dynamicContext) {
@@ -70,6 +74,9 @@ public class BuildStoryContextNode extends AbstractArmorySupport {
 
         dynamicContext.setStoryContextEntity(storyContextEntity);
         dynamicContext.setStoryContext(sb.toString());
+        if (planningCheckpointService != null) {
+            planningCheckpointService.initialize(requestParameter, dynamicContext);
+        }
         return router(requestParameter, dynamicContext);
     }
 }

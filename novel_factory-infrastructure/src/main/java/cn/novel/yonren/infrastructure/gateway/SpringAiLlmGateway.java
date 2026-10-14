@@ -8,6 +8,8 @@ import cn.novel.yonren.domain.novel.service.armory.LlmRuntimeConfig;
 import cn.novel.yonren.domain.novel.service.armory.llm.LlmErrorClassifier;
 import cn.novel.yonren.domain.novel.service.armory.llm.ModelFallbackChain;
 import cn.novel.yonren.domain.novel.service.job.LlmBudgetFuse;
+import cn.novel.yonren.domain.novel.service.job.LlmInteractionEvent;
+import cn.novel.yonren.domain.novel.service.job.LlmInteractionTracker;
 import cn.novel.yonren.types.enums.ModelScene;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -43,8 +45,11 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * LLM 网关的 Spring AI 适配实现：OpenAI 客户端构建、消息组装、参数覆盖
@@ -84,11 +89,19 @@ public class SpringAiLlmGateway implements LlmGateway {
     /** Continue with ChatGPT：封装 OAuth 凭据与 Responses API，主网关不接触令牌。 */
     private final ChatGptGateway chatGptGateway;
 
+    /** ChatGPT OAuth 通道独立的业务重试与全进程冷却（Spring AI retry 不覆盖该直连分支）。 */
+    private final LlmInteractionTracker interactionTracker;
+    private final int chatGptMaxAttempts;
+    private final long chatGptInitialBackoffMs;
+    private final long chatGptMaxBackoffMs;
+    private final AtomicLong chatGptCooldownUntilMs = new AtomicLong();
+
     /** 保留离线校准工具的旧构造签名；这些工具只走 API Key 模式。 */
     public SpringAiLlmGateway(int maxAttempts, int connectTimeoutSeconds, int readTimeoutSeconds,
                               LlmRuntimeConfig llmRuntimeConfig, LlmBudgetFuse budgetFuse) {
         this(maxAttempts, connectTimeoutSeconds, readTimeoutSeconds, llmRuntimeConfig, budgetFuse,
-                new UnavailableChatGptGateway());
+                new UnavailableChatGptGateway(), new LlmInteractionTracker(), 4, 5000, 60000,
+                HttpTimeouts.requestFactory(connectTimeoutSeconds, readTimeoutSeconds));
     }
 
     @Autowired
@@ -97,21 +110,39 @@ public class SpringAiLlmGateway implements LlmGateway {
                               @Value("${novel.llm.read-timeout-seconds:600}") int readTimeoutSeconds,
                               LlmRuntimeConfig llmRuntimeConfig,
                               LlmBudgetFuse budgetFuse,
-                              ChatGptGateway chatGptGateway) {
+                              ChatGptGateway chatGptGateway,
+                              LlmInteractionTracker interactionTracker,
+                              @Value("${novel.llm.chatgpt-retry.max-attempts:4}") int chatGptMaxAttempts,
+                              @Value("${novel.llm.chatgpt-retry.initial-backoff-ms:5000}") long chatGptInitialBackoffMs,
+                              @Value("${novel.llm.chatgpt-retry.max-backoff-ms:60000}") long chatGptMaxBackoffMs) {
+        this(maxAttempts, connectTimeoutSeconds, readTimeoutSeconds, llmRuntimeConfig, budgetFuse,
+                chatGptGateway, interactionTracker, chatGptMaxAttempts, chatGptInitialBackoffMs,
+                chatGptMaxBackoffMs, HttpTimeouts.requestFactory(connectTimeoutSeconds, readTimeoutSeconds));
+    }
+
+    SpringAiLlmGateway(int maxAttempts, int connectTimeoutSeconds, int readTimeoutSeconds,
+                       LlmRuntimeConfig llmRuntimeConfig, LlmBudgetFuse budgetFuse,
+                       ChatGptGateway chatGptGateway, LlmInteractionTracker interactionTracker,
+                       int chatGptMaxAttempts, long chatGptInitialBackoffMs, long chatGptMaxBackoffMs,
+                       ClientHttpRequestFactory requestFactory) {
         this.maxAttempts = maxAttempts;
         this.llmRuntimeConfig = llmRuntimeConfig;
         this.budgetFuse = budgetFuse;
         this.chatGptGateway = chatGptGateway;
+        this.interactionTracker = interactionTracker;
+        this.chatGptMaxAttempts = Math.max(1, chatGptMaxAttempts);
+        this.chatGptInitialBackoffMs = Math.max(0, chatGptInitialBackoffMs);
+        this.chatGptMaxBackoffMs = Math.max(this.chatGptInitialBackoffMs, chatGptMaxBackoffMs);
         // 超时是"卡死"的唯一刹车：无超时则供应商静默不回包会永久阻塞 worker 线程
-        this.requestFactory = HttpTimeouts.requestFactory(connectTimeoutSeconds, readTimeoutSeconds);
+        this.requestFactory = requestFactory;
         this.retryTemplate = RetryTemplate.builder()
                 .maxAttempts(maxAttempts)
                 .retryOn(java.util.List.of(TransientAiException.class, ResourceAccessException.class,
                         java.util.concurrent.CancellationException.class,
                         java.net.http.HttpTimeoutException.class))
                 .build();
-        log.info("LLM 网关初始化：传输层最大尝试次数 = {}，连接超时 = {}s，读取超时 = {}s",
-                maxAttempts, connectTimeoutSeconds, readTimeoutSeconds);
+        log.info("LLM 网关初始化：传输层最大尝试次数 = {}，ChatGPT 最大尝试次数 = {}，连接超时 = {}s，读取超时 = {}s",
+                maxAttempts, this.chatGptMaxAttempts, connectTimeoutSeconds, readTimeoutSeconds);
     }
 
     private static final class UnavailableChatGptGateway implements ChatGptGateway {
@@ -173,17 +204,105 @@ public class SpringAiLlmGateway implements LlmGateway {
             recordUsage(module, selected, call, null, 0L, null, missing);
             throw missing;
         }
-        long start = System.currentTimeMillis();
-        try {
-            ChatGptGateway.Completion response = chatGptGateway.complete(
-                    selected.getModel(), call.getSystemPrompt(), call.getUserPrompt());
-            recordUsageValues(selected, call, response.content(), System.currentTimeMillis() - start,
-                    response.promptTokens(), response.completionTokens(), response.totalTokens(), null);
-            return response.content();
-        } catch (Exception e) {
-            recordUsage(module, selected, call, null, System.currentTimeMillis() - start, null, e);
-            throw e;
+        String jobId = MDC.get("trace-id");
+        String callId = UUID.randomUUID().toString();
+        String scene = call.getScene() == null ? "GENERAL" : call.getScene().name();
+        String promptPreview = promptPreview(call);
+        Exception last = null;
+        for (int attempt = 1; attempt <= chatGptMaxAttempts; attempt++) {
+            waitForSharedCooldown(jobId, callId, scene, selected.getModel(), attempt, promptPreview);
+            long start = System.currentTimeMillis();
+            recordInteraction(jobId, new LlmInteractionEvent(callId, "REQUESTED", scene, selected.getModel(),
+                    attempt, chatGptMaxAttempts, start, null, null,
+                    "已发送请求", promptPreview, null));
+            try {
+                ChatGptGateway.Completion response = chatGptGateway.complete(
+                        selected.getModel(), call.getSystemPrompt(), call.getUserPrompt());
+                long duration = System.currentTimeMillis() - start;
+                recordUsageValues(selected, call, response.content(), duration,
+                        response.promptTokens(), response.completionTokens(), response.totalTokens(), null);
+                recordInteraction(jobId, new LlmInteractionEvent(callId, "SUCCEEDED", scene, selected.getModel(),
+                        attempt, chatGptMaxAttempts, System.currentTimeMillis(), null, duration,
+                        "响应完成", null, response.content()));
+                return response.content();
+            } catch (Exception e) {
+                last = e;
+                long duration = System.currentTimeMillis() - start;
+                recordUsage(module, selected, call, null, duration, null, e);
+                boolean retryable = LlmErrorClassifier.classify(e).isRetryable();
+                long delay = retryable ? retryDelayMs(attempt) : 0L;
+                Long retryAt = retryable ? System.currentTimeMillis() + delay : null;
+                if (retryAt != null) {
+                    // 最后一次仍失败也保留冷却：后续作业必须尊重上游过载窗口，不能立刻再撞。
+                    chatGptCooldownUntilMs.accumulateAndGet(retryAt, Math::max);
+                }
+                if (!retryable || attempt >= chatGptMaxAttempts) {
+                    recordInteraction(jobId, new LlmInteractionEvent(callId, "FAILED", scene, selected.getModel(),
+                            attempt, chatGptMaxAttempts, System.currentTimeMillis(), retryAt, duration,
+                            publicErrorMessage(e), null, null));
+                    throw e;
+                }
+                recordInteraction(jobId, new LlmInteractionEvent(callId, "RETRY_WAIT", scene, selected.getModel(),
+                        attempt, chatGptMaxAttempts, System.currentTimeMillis(), retryAt, duration,
+                        "上游暂时繁忙，冷却后自动重试：" + publicErrorMessage(e), null, null));
+                sleepBeforeChatGptRetry(delay);
+            }
         }
+        throw new IllegalStateException("ChatGPT 重试循环异常退出", last);
+    }
+
+    private void waitForSharedCooldown(String jobId, String callId, String scene, String model,
+                                       int attempt, String promptPreview) {
+        long remaining = chatGptCooldownUntilMs.get() - System.currentTimeMillis();
+        if (remaining <= 0) {
+            return;
+        }
+        long retryAt = System.currentTimeMillis() + remaining;
+        recordInteraction(jobId, new LlmInteractionEvent(callId, "RETRY_WAIT", scene, model,
+                attempt, chatGptMaxAttempts, System.currentTimeMillis(), retryAt, null,
+                "共享冷却中，避免并发请求继续冲击上游", promptPreview, null));
+        sleepBeforeChatGptRetry(remaining);
+    }
+
+    private long retryDelayMs(int failedAttempt) {
+        if (chatGptInitialBackoffMs <= 0) {
+            return 0;
+        }
+        long exponential;
+        try {
+            exponential = Math.multiplyExact(chatGptInitialBackoffMs, 1L << Math.min(20, failedAttempt - 1));
+        } catch (ArithmeticException e) {
+            exponential = chatGptMaxBackoffMs;
+        }
+        long capped = Math.min(chatGptMaxBackoffMs, exponential);
+        double jitter = ThreadLocalRandom.current().nextDouble(0.85, 1.16);
+        return Math.min(chatGptMaxBackoffMs, Math.max(1L, Math.round(capped * jitter)));
+    }
+
+    void sleepBeforeChatGptRetry(long delayMs) {
+        if (delayMs <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("ChatGPT 重试等待被中断", e);
+        }
+    }
+
+    private void recordInteraction(String jobId, LlmInteractionEvent event) {
+        interactionTracker.record(jobId, event);
+    }
+
+    private static String promptPreview(LlmCall call) {
+        return "SYSTEM\n" + StringUtils.defaultString(call.getSystemPrompt())
+                + "\n\nUSER\n" + StringUtils.defaultString(call.getUserPrompt());
+    }
+
+    private static String publicErrorMessage(Exception error) {
+        return StringUtils.abbreviate(error.getClass().getSimpleName() + ": "
+                + StringUtils.defaultString(error.getMessage(), "未知错误"), 360);
     }
 
     /** 单次真实调用：消息组装 + 每调用级 runtime options 合并 */

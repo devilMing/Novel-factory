@@ -201,6 +201,23 @@
                     </div>
                 </div>
 
+                <!-- 模型调用实时链路：由作业状态接口每 2 秒增量刷新，请求/冷却/响应全过程可见 -->
+                <div id="model-link-card" class="content-card model-link-card hidden">
+                    <div class="section-label">MODEL LINK</div>
+                    <div class="model-link-heading">
+                        <div>
+                            <h3 class="model-link-title">大模型实时通信</h3>
+                            <p class="model-link-subtitle">展示当前场景、请求轮次、冷却倒计时及已裁剪的收发内容</p>
+                        </div>
+                        <span id="model-link-state" class="model-link-state idle"><i></i> 等待调用</span>
+                    </div>
+                    <div id="model-link-current" class="model-link-current">
+                        <span class="model-link-pulse"></span>
+                        <span>作业启动后，模型通信会出现在这里。</span>
+                    </div>
+                    <div id="model-link-timeline" class="model-link-timeline"></div>
+                </div>
+
                 <!-- 章节计划裁决（human-in-the-loop）：仅当作业进入 AWAITING_APPROVAL 时出现。
                      对应后端 yml story.plan-approval.enabled=true；关闭时此卡片永不出现，页面行为不变 -->
                 <div id="approval-card" class="content-card hidden" data-page-node-id="Gpw3sy9GHUtrl2sz22OQly">

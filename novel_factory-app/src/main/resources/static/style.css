@@ -380,6 +380,90 @@ textarea { resize: vertical; line-height: 1.7; }
 
 .error-text { color: var(--error); }
 
+/* ---- 大模型实时通信：紧凑的链路观测台 ---- */
+.model-link-card {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, var(--panel) 0%, var(--panel-2) 100%);
+}
+
+.model-link-card::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: linear-gradient(180deg, transparent, var(--accent), transparent);
+    opacity: .65;
+}
+
+.model-link-heading { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.model-link-title { font-size: 16px; letter-spacing: 1px; }
+.model-link-subtitle { color: var(--text-faint); font-size: 12px; margin-top: 3px; }
+.model-link-state {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1px;
+}
+.model-link-state i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.model-link-state.active { color: var(--accent); border-color: var(--accent-glow); }
+.model-link-state.active i, .model-link-state.retry i { animation: model-pulse 1.15s ease-in-out infinite; }
+.model-link-state.retry { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.model-link-state.success { color: var(--ok); }
+.model-link-state.failed { color: var(--error); }
+
+.model-link-current {
+    display: flex;
+    align-items: flex-start;
+    gap: 13px;
+    margin: 20px 0 14px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    background: rgba(7, 10, 16, .38);
+    font-family: var(--mono);
+    font-size: 12px;
+}
+body.light .model-link-current { background: rgba(2, 132, 199, .035); }
+.model-link-pulse { width: 8px; height: 8px; margin-top: 6px; flex: none; background: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+.model-link-current div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
+.model-link-current strong { color: var(--accent); letter-spacing: 1px; }
+.model-link-current span { color: var(--text-secondary); }
+.model-link-current small { flex-basis: 100%; color: var(--text-faint); }
+.model-link-clock { color: var(--warn) !important; }
+
+.model-link-timeline { max-height: 340px; overflow: auto; padding-right: 5px; }
+.model-link-event { display: grid; grid-template-columns: 18px minmax(0, 1fr); }
+.model-link-rail { position: relative; }
+.model-link-rail::after { content: ""; position: absolute; left: 5px; top: 14px; bottom: -4px; width: 1px; background: var(--line-strong); }
+.model-link-event:last-child .model-link-rail::after { display: none; }
+.model-link-rail b { position: absolute; left: 2px; top: 8px; width: 7px; height: 7px; border: 1px solid var(--accent); background: var(--panel); }
+.model-link-event.retry_wait .model-link-rail b { border-color: var(--warn); }
+.model-link-event.succeeded .model-link-rail b { border-color: var(--ok); background: var(--ok); }
+.model-link-event.failed .model-link-rail b { border-color: var(--error); background: var(--error); }
+.model-link-event-body { padding: 3px 0 14px 7px; min-width: 0; }
+.model-link-event header { display: flex; justify-content: space-between; gap: 12px; font-family: var(--mono); }
+.model-link-event header span { color: var(--text); font-size: 11px; letter-spacing: 1px; }
+.model-link-event time { color: var(--text-faint); font-size: 10px; text-align: right; }
+.model-link-event p { color: var(--text-secondary); font-size: 12px; margin: 4px 0; }
+.model-link-event p em { color: var(--accent); font-style: normal; margin-right: 10px; }
+.model-link-event details { margin-top: 7px; border: 1px solid var(--line); background: rgba(7, 10, 16, .32); }
+.model-link-event summary { cursor: pointer; color: var(--text-faint); font: 10px var(--mono); padding: 6px 9px; }
+.model-link-event pre { max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; padding: 9px; border-top: 1px solid var(--line); color: var(--text-secondary); font: 11px/1.65 var(--mono); }
+
+@keyframes model-pulse { 50% { opacity: .32; box-shadow: 0 0 14px currentColor; } }
+
+@media (max-width: 640px) {
+    .model-link-heading, .model-link-event header { flex-direction: column; }
+    .model-link-event time { text-align: left; }
+}
+
 .progress-wrap { margin: 6px 0 2px; }
 
 /* 字符进度条 [####----]：每章开始时由后端进度推进一格 */

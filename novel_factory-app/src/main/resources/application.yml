@@ -12,3 +12,8 @@ novel:
   llm:
     connect-timeout-seconds: 20
     read-timeout-seconds: 1800
+    chatgpt-retry:
+      # OAuth Responses API 不经过 Spring AI retry：此处独立做指数退避、抖动与共享冷却。
+      max-attempts: 4
+      initial-backoff-ms: 5000
+      max-backoff-ms: 60000

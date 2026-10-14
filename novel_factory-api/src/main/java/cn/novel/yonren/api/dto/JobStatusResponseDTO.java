@@ -3,6 +3,7 @@ package cn.novel.yonren.api.dto;
 import lombok.Data;
 
 import java.util.Map;
+import java.util.List;
 
 /**
  * 作业状态响应：submit 仅填 jobId/status，status 查询与 cancel 返回全量快照
@@ -69,5 +70,8 @@ public class JobStatusResponseDTO {
      * healthyLine/direction/level/detail）/ recommendations。声明为 Object 以保持 api 模块不依赖 domain
      */
     private Object healthReport;
+
+    /** 当前作业内最近的模型请求、冷却重试与响应事件（已裁剪，不含授权令牌）。 */
+    private List<LlmInteractionEventDTO> llmInteractions;
 
 }
